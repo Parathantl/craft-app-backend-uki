@@ -1,8 +1,12 @@
+const dotenv = require("dotenv");
+dotenv.config();
+
 const express = require('express');
 const mongoose = require('mongoose');
 const Category = require('./models/Category');
 const User = require('./models/User');
 const bcrypt = require('bcrypt');
+const sendEmail = require('./utils/sendEmail');
 
 const app = express();
 
@@ -83,6 +87,8 @@ app.post('/api/auth/register', async(req, res) => {
 
     const hashPassword = bcrypt.hashSync(password, 10);
     await User.create({ name, email, password: hashPassword, role, isActive: false });
+
+    await sendEmail(email, 'Verify your email', 'Please verify your email by clicking the link.');
 
     // Send verification email logic here (omitted for brevity)
     res.status(201).json({ message: 'User registered. Please verify your email.' });
