@@ -7,6 +7,8 @@ const Category = require('./models/Category');
 const User = require('./models/User');
 const bcrypt = require('bcrypt');
 const sendEmail = require('./utils/sendEmail');
+const Token = require("./models/Token");
+const { generateToken } = require("./utils/jwt");
 
 const app = express();
 
@@ -86,9 +88,12 @@ app.post('/api/auth/register', async(req, res) => {
     }
 
     const hashPassword = bcrypt.hashSync(password, 10);
-    await User.create({ name, email, password: hashPassword, role, isActive: false });
+    const user = await User.create({ name, email, password: hashPassword, role, isActive: false });
+    
+    const token = Math.random().toString(36).substring(2);
+    await Token.create({ userId: user._id, token});
 
-    await sendEmail(email, 'Verify your email', 'Please verify your email by clicking the link.');
+    await sendEmail(email, 'Verify your email', `Please verify your email by clicking the link. ${process.env.FRONTEND_URL}/verify/${token}`);
 
     // Send verification email logic here (omitted for brevity)
     res.status(201).json({ message: 'User registered. Please verify your email.' });
@@ -113,8 +118,32 @@ app.post('/api/auth/login', async(req, res) => {
     }
 
     // Generate JWT token logic here (omitted for brevity)
-    
-    res.status(200).json(userDetail);
+    const token = generateToken(userDetail);
+    res.status(200).json({ token  });
+});
+
+app.get('/api/verify/:token', async (req, res) => {
+    const { token } = req.params;
+
+    const tokenDetail = await Token.findOne({ token });
+
+    if (!tokenDetail) {
+        return res.status(400).json({ error: 'Invalid or expired token' });
+    }
+
+    const userDetail = await User.findById(tokenDetail.userId);
+
+    if (!userDetail) {
+        return res.status(404).json({ error: 'User not found' });
+    }
+
+    userDetail.isActive = true;
+
+    await userDetail.save();
+
+    await tokenDetail.deleteOne();
+
+    res.status(200).json({ message: 'Email verified successfully. You can now log in.' });
 });
 
 const PORT = 4000;
