@@ -3,151 +3,147 @@ dotenv.config();
 
 const express = require('express');
 const mongoose = require('mongoose');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const path = require('path');
+
+// Import routes
+const authRoutes = require('./routes/auth');
+const productRoutes = require('./routes/products');
+const orderRoutes = require('./routes/orders');
+const paymentRoutes = require('./routes/payments');
+const adminRoutes = require('./routes/admin');
+
+// Import models
 const Category = require('./models/Category');
-const User = require('./models/User');
-const bcrypt = require('bcrypt');
-const sendEmail = require('./utils/sendEmail');
-const Token = require("./models/Token");
-const { generateToken } = require("./utils/jwt");
 
 const app = express();
 
-app.use(express.json());
+// Security middleware
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+}));
 
-mongoose.connect('mongodb://localhost:27017/marketplace', {}).then(() => {
-    console.log('Connected to MongoDB');
+// CORS configuration
+app.use(cors({
+  origin: [
+    process.env.FRONTEND_URL || 'http://localhost:3000',
+    'http://localhost:5174',
+    'http://127.0.0.1:5174',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173' 
+  ],
+  credentials: true
+}));
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.'
+});
+app.use('/api/', limiter);
+
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Static file serving for uploads with CORS headers
+app.use('/uploads', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
+}, express.static(path.join(__dirname, 'uploads')));
+
+// Database connection
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/craft-marketplace', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => {
+  console.log('Connected to MongoDB');
 }).catch(err => {
-    console.error('Failed to connect to MongoDB', err);
+  console.error('Failed to connect to MongoDB', err);
+  process.exit(1);
 });
 
-app.get('/', (req, res) => {
-    res.send('Welcome to the Craft Marketplace API');
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
 });
 
-app.get('/api/categories', async (req, res) => { 
-    console.log("Fetching categories...");
-    try {
-        const categories = await Category.find();
-        res.json(categories);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+// API routes
+app.use('/api/auth', authRoutes);
+app.use('/api/products', productRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/admin', adminRoutes);
+
+// Public category routes
+app.get('/api/categories', async (req, res) => {
+  try {
+    const categories = await Category.find({}).sort({ name: 1 });
+    res.json(categories);
+  } catch (error) {
+    console.error('Get categories error:', error);
+    res.status(500).json({ error: 'Failed to fetch categories' });
+  }
 });
 
-app.post('/api/categories', async (req, res) => {
-    const { name, description } = req.body;
-    try {
-        const newCategory = new Category({ name, description });
-        await newCategory.save();
-        res.status(201).json(newCategory);
-    } catch (error) {
-        res.status(400).json({ error: error.message });
-    }
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({ 
+      error: 'Validation Error', 
+      details: Object.values(err.errors).map(e => e.message) 
+    });
+  }
+  
+  if (err.name === 'CastError') {
+    return res.status(400).json({ error: 'Invalid ID format' });
+  }
+  
+  if (err.code === 11000) {
+    return res.status(400).json({ error: 'Duplicate field value' });
+  }
+  
+  res.status(500).json({ error: 'Something went wrong!' });
 });
 
-app.put('/api/categories/:id', async (req, res) => {
-    const { id } = req.params;
-    const { name, description } = req.body;
-    try {
-        const updatedCategory = await Category.findByIdAndUpdate(id, { name, description });
-        if (!updatedCategory) {
-            return res.status(404).json({ error: 'Category not found' });
-        }
-        res.json(updatedCategory);
-    } catch (error) {
-        res.status(400).json({ error: error.message });
-    }
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Route not found' });
 });
 
-app.delete('/api/categories/:id', async (req, res) => {
-    const { id } = req.params;
-    try {
-        const deletedCategory = await Category.findByIdAndDelete(id);
-        if (!deletedCategory) {
-            return res.status(404).json({ error: 'Category not found' });
-        }
-        res.json({ message: 'Category deleted' });
-    } catch (error) {
-        res.status(400).json({ error: error.message });
-    }
-});
-
-app.post('/api/auth/register', async(req, res) => {
-    const { name, email, password, role } = req.body;
-
-    if (role === 'admin') {
-        return res.status(403).json({ error: 'Cannot register as admin' });
-    }
-
-    if (!name || !email || !password || !role) {
-        return res.status(400).json({ error: 'All fields are required' });
-    }
-
-    if (role !== 'creator' && role !== 'user') {
-        return res.status(400).json({ error: 'Invalid role' });
-    }
-
-    const hashPassword = bcrypt.hashSync(password, 10);
-    const user = await User.create({ name, email, password: hashPassword, role, isActive: false });
-    
-    const token = Math.random().toString(36).substring(2);
-    await Token.create({ userId: user._id, token});
-
-    await sendEmail(email, 'Verify your email', `Please verify your email by clicking the link. ${process.env.FRONTEND_URL}/verify/${token}`);
-
-    // Send verification email logic here (omitted for brevity)
-    res.status(201).json({ message: 'User registered. Please verify your email.' });
-});
-
-app.post('/api/auth/login', async(req, res) => {
-    const { email, password } = req.body;
-
-    const userDetail = await User.findOne({ email });
-    if (!userDetail) {
-        return res.status(404).json({ error: 'User not found' });
-    }
-
-    const isPasswordValid = bcrypt.compareSync(password, userDetail.password);
-
-    if (!isPasswordValid) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    if (!userDetail.isActive) {
-        return res.status(403).json({ error: 'Account not activated. Please verify your email.' });
-    }
-
-    // Generate JWT token logic here (omitted for brevity)
-    const token = generateToken(userDetail);
-    res.status(200).json({ token  });
-});
-
-app.get('/api/verify/:token', async (req, res) => {
-    const { token } = req.params;
-
-    const tokenDetail = await Token.findOne({ token });
-
-    if (!tokenDetail) {
-        return res.status(400).json({ error: 'Invalid or expired token' });
-    }
-
-    const userDetail = await User.findById(tokenDetail.userId);
-
-    if (!userDetail) {
-        return res.status(404).json({ error: 'User not found' });
-    }
-
-    userDetail.isActive = true;
-
-    await userDetail.save();
-
-    await tokenDetail.deleteOne();
-
-    res.status(200).json({ message: 'Email verified successfully. You can now log in.' });
-});
-
-const PORT = 4000;
+const PORT = process.env.PORT || 4000;
 
 app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`🚀 Craft Marketplace API server running on http://localhost:${PORT}`);
+  console.log(`📧 Email verification URL: ${process.env.FRONTEND_URL || 'http://localhost:3000'}`);
+  console.log(`💳 PayHere integration: ${process.env.PAYHERE_SANDBOX_URL ? 'Enabled' : 'Disabled'}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  mongoose.connection.close(() => {
+    console.log('MongoDB connection closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  mongoose.connection.close(() => {
+    console.log('MongoDB connection closed');
+    process.exit(0);
+  });
 });
