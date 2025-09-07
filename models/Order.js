@@ -15,6 +15,11 @@ const orderSchema = new mongoose.Schema({
       default: "pending" 
     },
     shippingAddress: { type: String, required: true },
+    customerInfo: {
+      name: String,
+      email: String,
+      phone: String
+    },
     trackingInfo: {
       provider: String,
       trackingNumber: String,

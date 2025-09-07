@@ -14,7 +14,8 @@ router.post('/', async (req, res) => {
       customerName, 
       customerEmail, 
       customerPhone,
-      totalAmount 
+      totalAmount,
+      paymentMethod 
     } = req.body;
 
     if (!products || !Array.isArray(products) || products.length === 0) {
@@ -73,10 +74,17 @@ router.post('/', async (req, res) => {
     }
 
     // Create payment record
+    let paymentMethodValue = 'card'; // Default
+    if (paymentMethod === 'payhere') {
+      paymentMethodValue = 'card'; // PayHere processes card payments
+    } else if (paymentMethod === 'card') {
+      paymentMethodValue = 'card';
+    }
+    
     const payment = new Payment({
       order: order._id,
       amount: totalAmount,
-      method: 'pending',
+      method: paymentMethodValue,
       status: 'pending'
     });
     await payment.save();
