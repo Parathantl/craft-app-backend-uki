@@ -1,12 +1,12 @@
 const express = require('express');
-const { authenticateToken, authorizeRoles } = require('../middleware/auth');
+const { authenticateToken, optionalAuthenticate, authorizeRoles } = require('../middleware/auth');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Payment = require('../models/Payment');
 const router = express.Router();
 
 // Create order (authenticated user or guest)
-router.post('/', async (req, res) => {
+router.post('/', optionalAuthenticate, async (req, res) => {
   try {
     const { 
       products, 
@@ -339,6 +339,51 @@ router.get('/creator/stats', authenticateToken, authorizeRoles('creator'), async
   } catch (error) {
     console.error('Get creator stats error:', error);
     res.status(500).json({ error: 'Failed to fetch order statistics' });
+  }
+});
+
+// Delete an order by creator if it's pending and unpaid
+router.delete('/creator/:id', authenticateToken, authorizeRoles('creator'), async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id).populate('products.product', 'creator');
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Only pending orders can be deleted
+    if (order.status !== 'pending') {
+      return res.status(400).json({ error: 'Only pending orders can be deleted' });
+    }
+
+    // Ensure all products in the order belong to this creator
+    const allBelongToCreator = order.products.every(
+      (item) => item.product && item.product.creator && item.product.creator.toString() === req.user._id.toString()
+    );
+    if (!allBelongToCreator) {
+      return res.status(403).json({ error: 'You can only delete orders containing your products' });
+    }
+
+    // Ensure there is no successful payment
+    const successfulPayment = await Payment.findOne({ order: order._id, status: 'paid' });
+    if (successfulPayment) {
+      return res.status(400).json({ error: 'Cannot delete an order that has been paid' });
+    }
+
+    // Restore stock
+    for (const item of order.products) {
+      await Product.findByIdAndUpdate(item.product._id, { $inc: { stock: item.quantity } });
+    }
+
+    // Remove pending/failed payments linked to this order
+    await Payment.deleteMany({ order: order._id, status: { $in: ['pending', 'failed'] } });
+
+    // Delete the order
+    await Order.findByIdAndDelete(order._id);
+
+    res.json({ message: 'Order deleted successfully' });
+  } catch (error) {
+    console.error('Creator delete order error:', error);
+    res.status(500).json({ error: 'Failed to delete order' });
   }
 });
 

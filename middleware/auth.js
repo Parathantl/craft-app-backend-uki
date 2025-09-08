@@ -28,6 +28,29 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
+// Optionally authenticate: if token present and valid, set req.user; otherwise proceed without error
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return next();
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select('-password');
+
+    if (user && user.isActive) {
+      req.user = user;
+    }
+  } catch (error) {
+    // Ignore token errors for optional auth
+  } finally {
+    next();
+  }
+};
+
 const authorizeRoles = (...roles) => {
   return (req, res, next) => {
     if (!req.user) {
@@ -42,4 +65,4 @@ const authorizeRoles = (...roles) => {
   };
 };
 
-module.exports = { authenticateToken, authorizeRoles };
+module.exports = { authenticateToken, optionalAuthenticate, authorizeRoles };

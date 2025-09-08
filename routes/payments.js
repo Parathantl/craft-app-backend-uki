@@ -20,10 +20,17 @@ router.post('/payhere-webhook', async (req, res) => {
     } = req.body;
 
     // Verify MD5 signature (PayHere security)
-    const secret = process.env.PAYHERE_SECRET || 'CHANGE123'; // Replace with your PayHere secret
+    // md5sig = MD5(merchant_id + order_id + amount + currency + status_code + MD5(merchant_secret).toUpperCase()).toUpperCase()
+    const merchantSecret = process.env.PAYHERE_SECRET_KEY || '';
+    const secretMd5Upper = crypto
+      .createHash('md5')
+      .update(merchantSecret)
+      .digest('hex')
+      .toUpperCase();
+
     const expectedMd5sig = crypto
       .createHash('md5')
-      .update(merchant_id + order_id + payhere_amount + payhere_currency + status_code + secret)
+      .update(`${merchant_id}${order_id}${payhere_amount}${payhere_currency}${status_code}${secretMd5Upper}`)
       .digest('hex')
       .toUpperCase();
 
@@ -39,17 +46,13 @@ router.post('/payhere-webhook', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    // Create payment record
+    // Create payment record (match Payment schema)
     const payment = new Payment({
-      orderId: order._id,
-      userId: custom_2,
-      paymentId: payment_id,
-      amount: payhere_amount,
-      currency: payhere_currency,
-      status: status_code === '2' ? 'completed' : 'failed',
-      paymentMethod: 'payhere',
-      gateway: 'payhere',
-      gatewayResponse: req.body
+      order: order._id,
+      amount: Number(payhere_amount),
+      method: 'card',
+      status: status_code === '2' ? 'paid' : 'failed',
+      transactionId: payment_id
     });
 
     await payment.save();
@@ -125,3 +128,32 @@ router.get('/history', async (req, res) => {
 });
 
 module.exports = router;
+
+// Generate PayHere hash for Checkout/JS SDK
+// Expects: { orderId, amount, currency }
+// Returns: { hash }
+router.post('/payhere-hash', async (req, res) => {
+  try {
+    const { orderId, amount, currency } = req.body;
+    const merchantId = process.env.PAYHERE_MERCHANT_ID || process.env.VITE_PAYHERE_MERCHANT_ID;
+    const merchantSecret = process.env.PAYHERE_SECRET_KEY;
+
+    if (!merchantId || !merchantSecret) {
+      return res.status(500).json({ error: 'PayHere credentials not configured' });
+    }
+
+    if (!orderId || !amount || !currency) {
+      return res.status(400).json({ error: 'orderId, amount, and currency are required' });
+    }
+
+    const amountStr = Number(amount).toFixed(2);
+    const secretMd5 = crypto.createHash('md5').update(merchantSecret).digest('hex').toUpperCase();
+    const raw = `${merchantId}${orderId}${amountStr}${currency}${secretMd5}`;
+    const hash = crypto.createHash('md5').update(raw).digest('hex').toUpperCase();
+
+    res.json({ hash, merchantId });
+  } catch (error) {
+    console.error('Generate PayHere hash error:', error);
+    res.status(500).json({ error: 'Failed to generate hash' });
+  }
+});
